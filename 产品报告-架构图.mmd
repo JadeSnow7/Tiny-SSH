@@ -1,0 +1,6 @@
+graph TD
+    A["View (UI)<br/>MainActivity.kt<br/>Jetpack Compose"] -->|"用户操作<br/>(connect, ls, save)"| B["ViewModel<br/>SshViewModel.kt"]
+    B -->|"更新 UI State<br/>(StateFlow)"| A
+    B -->|"调用数据接口<br/>(connect, listFiles)"| C["Repository<br/>SshRepository.kt"]
+    C -->|"返回操作结果<br/>(Kotlin Flow / Callback)"| B
+    C -->|"执行协议命令"| D["Data Source<br/>JSch Library"]
