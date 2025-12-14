@@ -1,6 +1,7 @@
 package com.example.myapplication
 
 import android.content.Context
+import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -31,6 +32,11 @@ data class SftpUiState(
     val errorMessage: String? = null,
 )
 
+data class EditorUiState(
+    val content: String = "",
+    val isLoading: Boolean = true
+)
+
 class SshViewModel : ViewModel() {
 
     private val sshRepository = SshRepository()
@@ -50,7 +56,11 @@ class SshViewModel : ViewModel() {
     // --- SFTP Screen State ---
     private val _sftpUiState = MutableStateFlow(SftpUiState())
     val sftpUiState: StateFlow<SftpUiState> = _sftpUiState.asStateFlow()
-    
+
+    // --- Editor Screen State ---
+    private val _editorUiState = MutableStateFlow(EditorUiState())
+    val editorUiState: StateFlow<EditorUiState> = _editorUiState.asStateFlow()
+
     // --- Snackbar messages ---
     private val _snackbarMessage = MutableStateFlow<String?>(null)
     val snackbarMessage: StateFlow<String?> = _snackbarMessage.asStateFlow()
@@ -59,7 +69,7 @@ class SshViewModel : ViewModel() {
         super.onCleared()
         sshRepository.disconnect()
     }
-    
+
     fun onSnackbarShown() {
         _snackbarMessage.value = null
     }
@@ -89,7 +99,7 @@ class SshViewModel : ViewModel() {
         sshRepository.disconnect()
         _isConnected.value = false
     }
-    
+
     // --- Terminal Actions ---
     private fun startShellSession() {
         viewModelScope.launch {
@@ -112,13 +122,13 @@ class SshViewModel : ViewModel() {
         sshRepository.sendCommandToShell(command)
         _terminalUiState.update { it.copy(command = "") } // Clear input after sending
     }
-    
+
     // --- SFTP Actions ---
     fun loadSftpFiles(path: String) {
         _sftpUiState.update { it.copy(isLoading = true, errorMessage = null) }
         viewModelScope.launch {
             sshRepository.listRemoteFiles(path)
-                .catch { e -> 
+                .catch { e ->
                     _sftpUiState.update { it.copy(isLoading = false, errorMessage = e.message) }
                 }
                 .collect { files ->
@@ -132,7 +142,7 @@ class SshViewModel : ViewModel() {
                 }
         }
     }
-    
+
     fun downloadFile(context: Context, file: SftpFile) {
         _snackbarMessage.value = "Downloading ${file.name}..."
         sshRepository.downloadFile(context, file.path, file.name) { result ->
@@ -140,7 +150,21 @@ class SshViewModel : ViewModel() {
             result.onFailure { _snackbarMessage.value = "Download failed: ${it.message}" }
         }
     }
-    
+
+    fun uploadFile(context: Context, uri: Uri) {
+        val path = _sftpUiState.value.currentPath
+        _snackbarMessage.value = "Uploading..."
+        sshRepository.uploadFile(context, uri, path) { result ->
+            result.onSuccess {
+                _snackbarMessage.value = "File uploaded successfully"
+                loadSftpFiles(path)
+            }
+            result.onFailure {
+                _snackbarMessage.value = "Upload failed: ${it.message}"
+            }
+        }
+    }
+
     fun createDirectory(dirName: String) {
         val path = _sftpUiState.value.currentPath
         sshRepository.createDirectory(path, dirName) { result ->
@@ -174,6 +198,37 @@ class SshViewModel : ViewModel() {
             }
             result.onFailure {
                 _snackbarMessage.value = "Error renaming: ${it.message}"
+            }
+        }
+    }
+    
+    // --- Editor Actions ---
+    fun readFileContent(filePath: String) {
+        _editorUiState.update { it.copy(isLoading = true) }
+        viewModelScope.launch {
+            sshRepository.readFileContent(filePath)
+                .catch { e -> 
+                    _editorUiState.update { it.copy(isLoading = false, content = "Error: ${e.message}") }
+                }
+                .collect { content ->
+                    _editorUiState.update { it.copy(isLoading = false, content = content) }
+                }
+        }
+    }
+
+    fun onFileContentChange(newContent: String) {
+        _editorUiState.update { it.copy(content = newContent) }
+    }
+
+    fun saveFileContent(file: SftpFile) {
+        val content = _editorUiState.value.content
+        _snackbarMessage.value = "Saving..."
+        sshRepository.writeFileContent(file.path, content) { result ->
+            result.onSuccess { 
+                _snackbarMessage.value = "File saved successfully"
+            }
+            result.onFailure {
+                _snackbarMessage.value = "Save failed: ${it.message}"
             }
         }
     }

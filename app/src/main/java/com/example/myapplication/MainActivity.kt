@@ -1,8 +1,11 @@
 package com.example.myapplication
 
+import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -20,13 +23,15 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Computer
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.Upload
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -53,17 +58,20 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun SshClientApp(sshViewModel: SshViewModel = viewModel()) {
     val isConnected by sshViewModel.isConnected.collectAsState()
+    var fileToEdit by remember { mutableStateOf<SftpFile?>(null) }
 
-    if (!isConnected) {
+    if (fileToEdit != null) {
+        FileEditorScreen(sshViewModel, fileToEdit!!) { fileToEdit = null }
+    } else if (!isConnected) {
         LoginScreen(sshViewModel)
     } else {
-        MainScaffold(sshViewModel)
+        MainScaffold(sshViewModel) { fileToEdit = it }
     }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun MainScaffold(sshViewModel: SshViewModel) {
+fun MainScaffold(sshViewModel: SshViewModel, onEditFile: (SftpFile) -> Unit) {
     var currentScreen by remember { mutableStateOf<Screen>(Screen.TERMINAL) }
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
@@ -81,7 +89,7 @@ fun MainScaffold(sshViewModel: SshViewModel) {
         topBar = {
             TopAppBar(title = { Text("掌上终端") }, actions = {
                 IconButton(onClick = { sshViewModel.disconnect() }) {
-                    Icon(Icons.Default.ArrowBack, contentDescription = "Logout")
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Logout")
                 }
             })
         },
@@ -106,7 +114,8 @@ fun MainScaffold(sshViewModel: SshViewModel) {
         Box(modifier = Modifier.padding(innerPadding)) {
             when (currentScreen) {
                 Screen.TERMINAL -> TerminalScreen(sshViewModel)
-                Screen.SFTP -> SftpScreen(sshViewModel)
+                Screen.SFTP -> SftpScreen(sshViewModel, onEditFile)
+                else -> {}
             }
         }
     }
@@ -203,12 +212,16 @@ fun TerminalScreen(sshViewModel: SshViewModel) {
 }
 
 @Composable
-fun SftpScreen(sshViewModel: SshViewModel) {
+fun SftpScreen(sshViewModel: SshViewModel, onEditFile: (SftpFile) -> Unit) {
     val sftpState by sshViewModel.sftpUiState.collectAsState()
     var showCreateDirDialog by remember { mutableStateOf(false) }
     var fileToDelete by remember { mutableStateOf<SftpFile?>(null) }
     var fileToRename by remember { mutableStateOf<SftpFile?>(null) }
     val context = LocalContext.current
+    
+    val filePickerLauncher = rememberLauncherForActivityResult(contract = ActivityResultContracts.GetContent()) { uri: Uri? ->
+        uri?.let { sshViewModel.uploadFile(context, it) }
+    }
 
     if (showCreateDirDialog) {
         CreateOrRenameDialog(
@@ -244,8 +257,14 @@ fun SftpScreen(sshViewModel: SshViewModel) {
 
     Scaffold(
         floatingActionButton = {
-            FloatingActionButton(onClick = { showCreateDirDialog = true }) {
-                Icon(Icons.Default.Add, contentDescription = "Create Directory")
+            Column(horizontalAlignment = Alignment.End) {
+                FloatingActionButton(onClick = { showCreateDirDialog = true }) {
+                    Icon(Icons.Default.Add, contentDescription = "Create Directory")
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+                FloatingActionButton(onClick = { filePickerLauncher.launch("*/*") }) {
+                    Icon(Icons.Default.Upload, contentDescription = "Upload File")
+                }
             }
         }
     ) { padding ->
@@ -275,7 +294,7 @@ fun SftpScreen(sshViewModel: SshViewModel) {
                             item {
                                 ListItem(
                                     headlineContent = { Text("../") },
-                                    leadingContent = { Icon(Icons.Default.ArrowBack, contentDescription = "Parent Directory") },
+                                    leadingContent = { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Parent Directory") },
                                     modifier = Modifier.clickable { 
                                         val parentPath = sftpState.currentPath.substringBeforeLast('/', ".")
                                         sshViewModel.loadSftpFiles(parentPath)
@@ -307,13 +326,54 @@ fun SftpScreen(sshViewModel: SshViewModel) {
                                     if (file.isDirectory) {
                                         sshViewModel.loadSftpFiles(file.path)
                                     } else {
-                                       sshViewModel.downloadFile(context, file)
+                                       onEditFile(file)
                                     }
                                 }
                             )
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun FileEditorScreen(sshViewModel: SshViewModel, file: SftpFile, onExit: () -> Unit) {
+    val editorState by sshViewModel.editorUiState.collectAsState()
+
+    LaunchedEffect(file) {
+        sshViewModel.readFileContent(file.path)
+    }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text(file.name) },
+                navigationIcon = {
+                    IconButton(onClick = onExit) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                },
+                actions = {
+                    IconButton(onClick = { sshViewModel.saveFileContent(file) }) {
+                        Icon(Icons.Default.Save, contentDescription = "Save")
+                    }
+                }
+            )
+        }
+    ) { padding ->
+        Box(modifier = Modifier.padding(padding).fillMaxSize()) {
+            if (editorState.isLoading) {
+                CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
+            } else {
+                TextField(
+                    value = editorState.content,
+                    onValueChange = { sshViewModel.onFileContentChange(it) },
+                    modifier = Modifier.fillMaxSize(),
+                    textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
+                )
             }
         }
     }
